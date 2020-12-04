@@ -277,7 +277,7 @@ fieldsplit_0_lu = {
     "ksp_type": "preonly",
     "ksp_max_it": 1,
     "pc_type": "lu",
-    #"pc_factor_mat_solver_type": "superlu_dist",
+    # "pc_factor_mat_solver_type": "superlu_dist",
 }
 
 fieldsplit_0_hypre = {
@@ -291,8 +291,10 @@ mg_levels_solver = {
     "ksp_type": "fgmres",
     "ksp_norm_type": "unpreconditioned",
     "ksp_max_it": 5,
+    # "pc_type": "pbjacobi",
     "pc_type": "python",
-    "pc_python_type": "hexstar.ASMHexStarPC" if (args.dim == 3 and args.quad == True) else "firedrake.ASMStarPC",
+    #"pc_python_type": "hexstar.ASMHexStarPC" if (args.dim == 3 and args.quad == True) else "firedrake.ASMStarPC",
+    "pc_python_type": "hexstar.ASMHexStarPC" if (args.dim == 3 and args.quad == True) else "star.ASMStarPlusPC",
     "pc_star_construct_dim": 0,
     "pc_star_backend": args.asmbackend,
     # "pc_star_sub_pc_asm_sub_mat_type": "seqaij",
@@ -309,6 +311,7 @@ fieldsplit_0_mg = {
     "ksp_type": "preonly",
     "ksp_norm_type": "unpreconditioned",
     "ksp_convergence_test": "skip",
+    # "pc_mg_log": None,
     "pc_type": "mg",
     "pc_mg_type": "full",
     "mg_levels": mg_levels_solver,
@@ -323,9 +326,9 @@ params = {
     "snes_monitor": None,
     "mat_type": "nest",
     "ksp_type": "fgmres",
-    "ksp_rtol": 1.0e-6,
+    "ksp_rtol": 1.0e-8,
     "ksp_atol": 1.0e-10,
-    "ksp_max_it": 100,
+    "ksp_max_it": 500,
     "ksp_monitor_true_residual": None,
     "ksp_converged_reason": None,
     "pc_type": "fieldsplit",
@@ -366,42 +369,8 @@ appctx = {"nu_fun": mu_fun, "nu_expr": mu_expr(mh[-1]), "gamma": gamma, "dr":dr,
 
 
 BBCTWB_dict = {} # These are of type PETSc.Mat
-BBCTW_dict = {} # These are of type PETSc.Mat
-
-for level in range(nref+1):
-    levelmesh = mh[level]
-    Vlevel = FunctionSpace(levelmesh, V.ufl_element())
-    Qlevel = FunctionSpace(levelmesh, Q.ufl_element())
-    Zlevel = Vlevel * Qlevel
-    tmpp = TrialFunction(Qlevel)
-    tmpq = TestFunction(Qlevel)
-    if case in [3, 4]:
-        Wlevel = assemble(Tensor(inner(tmpp, tmpq)*dx).inv, mat_type='aij').petscmat
-    elif case == 5:
-        Wlevel = assemble(Tensor(1.0/mu_expr(levelmesh)*inner(tmpp, tmpq)*\
-                                 dx(degree=deg)).inv, mat_type='aij').petscmat
-    elif case == 6:
-        Wlevel = w*assemble(Tensor(1.0/mu_expr(levelmesh)*inner(tmpp, tmpq)*dx).inv).petscmat + (1-w)*assemble(Tensor(inner(tmpp, tmpq)*dx).inv).petscmat
-    else:
-        raise ValueError("Augmented Jacobian (case %d) not implemented yet" % case)
-
-    tmpu, tmpp = TrialFunctions(Zlevel)
-    tmpv, tmpq = TestFunctions(Zlevel)
-    tmpbcs = [DirichletBC(Zlevel.sub(0), Constant((0.,) * args.dim), "on_boundary")]
-    if args.dim == 3 and args.quad:
-        tmpbcs += [DirichletBC(Zlevel.sub(0), Constant((0., 0., 0.)), "top"), DirichletBC(Zlevel.sub(0), Constant((0., 0., 0.)), "bottom")]
-    BBClevel =  assemble(- tmpq * div(tmpu) * dx(degree=divdegree), bcs=tmpbcs, mat_type='nest').petscmat.getNestSubMatrix(1, 0)
-    Wlevel *= gamma
-    if level in BBCTW_dict:
-        BBCTWlevel = BBClevel.transposeMatMult(Wlevel, result=BBCTW_dict[level])
-    else:
-        BBCTWlevel = BBClevel.transposeMatMult(Wlevel)
-        BBCTW_dict[level] = BBCTWlevel
-    if level in BBCTWB_dict:
-        BBCTWBlevel = BBCTWlevel.matMult(BBClevel, result=BBCTWB_dict[level])
-    else:
-        BBCTWBlevel = BBCTWlevel.matMult(BBClevel)
-        BBCTWB_dict[level] = BBCTWBlevel
+BBC_dict = {}
+W_dict = {}
 
 if not case == 3:
     for level in range(nref+1):
@@ -428,17 +397,14 @@ if not case == 3:
             tmpbcs += [DirichletBC(Zlevel.sub(0), Constant((0., 0., 0.)), "top"), DirichletBC(Zlevel.sub(0), Constant((0., 0., 0.)), "bottom")]
         BBClevel =  assemble(- tmpq * div(tmpu) * dx(degree=divdegree), bcs=tmpbcs, mat_type='nest').petscmat.getNestSubMatrix(1, 0)
         Wlevel *= gamma
-        if level in BBCTW_dict:
-            BBCTWlevel = BBClevel.transposeMatMult(Wlevel, result=BBCTW_dict[level])
-        else:
-            BBCTWlevel = BBClevel.transposeMatMult(Wlevel)
-            BBCTW_dict[level] = BBCTWlevel
+        tic = time.time()
+        #todo: fill BBC_dict and W_dict and to the right thin in modify_residual
         if level in BBCTWB_dict:
-            BBCTWBlevel = BBCTWlevel.matMult(BBClevel, result=BBCTWB_dict[level])
+            BBCTWBlevel = Wlevel.PtAP(BBClevel, result=BBCTWB_dict[level])
         else:
-            BBCTWBlevel = BBCTWlevel.matMult(BBClevel)
-            BBCTWB_dict[level] = BBCTWBlevel
-
+            BBCTWB_dict[level] = Wlevel.PtAP(BBClevel)
+        toc = time.time()
+        print(toc-tic)
 
 
 # Solve Stoke's equation
@@ -463,8 +429,9 @@ def modify_residual(X, F):
         pre_is = Z._ises[1]
         Fvel = F.getSubVector(vel_is)
         Fpre = F.getSubVector(pre_is)
-        BTW = BBCTW_dict[nref]
-        Fvel += BTW*Fpre
+        warning('assuming that pressure residual is zero')
+        # BTW = BBCTW_dict[nref]
+        # Fvel += BTW*Fpre
         F.restoreSubVector(vel_is, Fvel)
         F.restoreSubVector(pre_is, Fpre)
     else:
@@ -525,7 +492,7 @@ for i in range(args.itref+1):
                     return A
             transfers = get_transfers(A_callback=Acb, BTWB_callback=BTWBcb)
         transfermanager = TransferManager(native_transfers=transfers)
-        solver.set_transfer_manager(transfermanager)
+        # solver.set_transfer_manager(transfermanager)
     # Write out solution
     solver.Z = Z #for calling performance_info
     solver.solve()
